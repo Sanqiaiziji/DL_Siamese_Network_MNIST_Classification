@@ -1,3 +1,5 @@
+import random
+
 import tensorflow as tf
 import numpy as np
 import cv2
@@ -51,5 +53,25 @@ def generate_data(path, dataset, images_per_class):
     print()
 
 
-generate_data('train_images', 'train', 30)
-generate_data('val_images', 'validation', 10)
+class DataProvider:
+    def __init__(self, path):
+        filenames = os.listdir(path)
+        self.images = [np.expand_dims(cv2.imread(os.path.join(path, filename), 0), 3) for filename in filenames]
+        self.labels = [filename.split('_')[0] for filename in filenames]
+        self.data_len = len(self.images)
+
+    def get_batch(self, batch_size):
+        indices = random.sample(range(0, self.data_len), batch_size*2)
+        indices_1 = indices[:int(len(indices)/2)]
+        indices_2 = indices[int(len(indices) / 2):]
+        images_1 = [self.images[i]/255 for i in indices_1]
+        images_2 = [self.images[i]/255 for i in indices_2]
+        labels_1 = [int(self.labels[i]) for i in indices_1]
+        labels_2 = [int(self.labels[i]) for i in indices_2]
+        the_same = 1-np.equal(labels_1, labels_2).astype(np.float32)
+        return images_1, images_2, the_same
+
+
+
+# generate_data('train_images', 'train', 30)
+# generate_data('val_images', 'validation', 10)
