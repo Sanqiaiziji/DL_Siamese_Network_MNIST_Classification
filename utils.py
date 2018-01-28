@@ -59,6 +59,8 @@ class DataProvider:
         self.images = [np.expand_dims(cv2.imread(os.path.join(path, filename), 0), 3) for filename in filenames]
         self.labels = [filename.split('_')[0] for filename in filenames]
         self.data_len = len(self.images)
+        self.i = 0
+        self.j = 0
 
     def get_batch(self, batch_size):
         indices = random.sample(range(0, self.data_len), batch_size*2)
@@ -68,10 +70,23 @@ class DataProvider:
         images_2 = [self.images[i]/255 for i in indices_2]
         labels_1 = [int(self.labels[i]) for i in indices_1]
         labels_2 = [int(self.labels[i]) for i in indices_2]
-        the_same = 1-np.equal(labels_1, labels_2).astype(np.float32)
+        the_same = np.expand_dims(1-np.equal(labels_1, labels_2).astype(np.float32), 1)
         return images_1, images_2, the_same
+
+    def get_single_data(self):
+        image1 = self.images[self.i] / 255
+        image2 = self.images[self.j] / 255
+        label1 = int(self.labels[self.i])
+        label2 = int(self.labels[self.j])
+        distance = 0 if label1==label2 else 1
+        self.j+=1
+        if self.j == self.data_len:
+            self.j=0
+            self.i+=1
+        return [image1], [image2], [distance]
+
 
 
 
 # generate_data('train_images', 'train', 30)
-# generate_data('val_images', 'validation', 10)
+# generate_data('val_images', 'validation', 5)

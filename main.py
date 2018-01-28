@@ -3,15 +3,17 @@ import numpy as np
 import cv2
 from utils import DataProvider
 
-
 # params
+batch_size = 40
+eta = 0.0000001
 margin = 0.2
-
+num_epochs = 30
 
 # placeholders
 images_1_pl = tf.placeholder(dtype=tf.float32, shape=[None, 28, 28, 1])
 images_2_pl = tf.placeholder(dtype=tf.float32, shape=[None, 28, 28, 1])
 the_same_pl = tf.placeholder(dtype=tf.float32, shape=None)
+
 
 # model
 def get_model(inputs):
@@ -48,24 +50,43 @@ def get_model(inputs):
         output = tf.layers.dense(dense2, 10)
         return output
 
+
 out_1 = get_model(images_1_pl)
 out_2 = get_model(images_2_pl)
 
 # loss
-Dw = tf.reduce_sum(tf.sqrt(tf.square(out_1 - out_2)), axis=1, keep_dims=True)
-loss = tf.multiply(1-the_same_pl,tf.square(Dw))# + the_same_pl * 0.5 * tf.square(tf.maximum(0.0, margin - Dw))
+Dw = tf.reduce_sum(tf.square(out_1 - out_2), axis=1, keep_dims=True)
+loss = 0.5 * (1 - the_same_pl) * tf.square(Dw) + 0.5 * the_same_pl * tf.square(tf.maximum(0.0, margin - Dw))
+loss = tf.reduce_sum(loss)
 
+# optimizer
+train_op = tf.train.AdamOptimizer(eta).minimize(loss)
 
-
-
-
-
-batch_size = 40
 provider = DataProvider('train_images')
+val_provider = DataProvider('val_images')
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
+    for i in range(provider.data_len ** 2):
+        images_1, images_2, the_same = provider.get_single_data()
+        _, cost = sess.run([train_op, loss],
+                           feed_dict={images_1_pl: images_1, images_2_pl: images_2, the_same_pl: the_same})
+        print("\rIterations: %.2f, cost: %f" % (i / provider.data_len ** 2, cost), end='', flush=True)
 
-    images_1, images_2, the_same = provider.get_batch(batch_size)
-    out = sess.run(loss, feed_dict={images_1_pl: images_1, images_2_pl: images_2, the_same_pl: the_same})
-    print(out.shape)
-
+    # test it
+    images = val_provider.images
+    labels = val_provider.labels
+    for i in range(val_provider.data_len):
+        img1 = [images[i]]
+        lbl1 = labels[i]
+        matching_label = -1
+        dissimilarity = 10000.0
+        for j in range(provider.data_len):
+            if i == j:
+                continue
+            img2 = [provider.images[j]]
+            lbl2 = provider.labels[j]
+            cost = sess.run(Dw, feed_dict={images_1_pl: img1, images_2_pl: img2})
+            if cost < dissimilarity:
+                dissimilarity = cost
+                matching_label = lbl2
+        print(lbl1, matching_label, dissimilarity)
