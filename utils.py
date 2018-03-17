@@ -1,92 +1,110 @@
-import random
+from collections import Counter
 
-import tensorflow as tf
 import numpy as np
-import cv2
-import os
-from shutil import rmtree
-
-mnist = tf.contrib.learn.datasets.load_dataset("mnist")
-train_data = mnist.train.images # Returns np.array
-train_labels = np.asarray(mnist.train.labels, dtype=np.int32)
-eval_data = mnist.test.images # Returns np.array
-eval_labels = np.asarray(mnist.test.labels, dtype=np.int32)
-
-
-def generate_data(path, dataset, images_per_class):
-    """
-    Generate folder with images
-    :param: path to folder
-    :param dataset: string, either train or validation
-    :return:
-    """
-    if os.path.isdir(path):
-        rmtree(path)
-    os.mkdir(path)
-    if dataset=='train':
-        images = train_data
-        labels = train_labels
-    elif dataset=='validation':
-        images = eval_data
-        labels = eval_labels
-    else:
-        raise Exception("No such dataset!")
-
-    counters = dict(zip([i for i in range(10)], [0]*10))
-    class_full = [0] * 10
-
-    i = 0
-    while sum(class_full)<10:
-        image = images[i].reshape((28,28))
-        image*= 255.0
-        # image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        label = labels[i]
-
-        if class_full[label]==0:
-            cv2.imwrite(path + '/' + str(label) + '_' + str(i) + '.png', image)
-            counters[label]+=1
-            if counters[label] == images_per_class:
-                class_full[label] = 1
-
-            print("\rGenerated: %.2f" % (sum(counters.values())/images_per_class*10), flush=True, end='')
-        i += 1
-    print()
+from sklearn.utils import shuffle
+from tensorflow.examples.tutorials.mnist import input_data
 
 
 class DataProvider:
-    def __init__(self, path):
-        filenames = os.listdir(path)
-        self.images = [np.expand_dims(cv2.imread(os.path.join(path, filename), 0), 3) for filename in filenames]
-        self.labels = [filename.split('_')[0] for filename in filenames]
-        self.data_len = len(self.images)
-        self.i = 0
-        self.j = 0
+    """
+    Provides data for network
+    """
 
-    def get_batch(self, batch_size):
-        indices = random.sample(range(0, self.data_len), batch_size*2)
-        indices_1 = indices[:int(len(indices)/2)]
-        indices_2 = indices[int(len(indices) / 2):]
-        images_1 = [self.images[i]/255 for i in indices_1]
-        images_2 = [self.images[i]/255 for i in indices_2]
-        labels_1 = [int(self.labels[i]) for i in indices_1]
-        labels_2 = [int(self.labels[i]) for i in indices_2]
-        the_same = np.expand_dims(1-np.equal(labels_1, labels_2).astype(np.float32), 1)
-        return images_1, images_2, the_same
+    def __init__(self, batch_size=50, exluded_digits=(1, 5)):
+        """
+        Downloads MNIST, segregates data into full training, one shot training and validation
+        """
+        mnist = input_data.read_data_sets('MNIST_data', one_hot=True, reshape=False, validation_size=0)
+        self.train_data = mnist.train.images  # Returns np.array
+        self.train_labels = np.asarray(mnist.train.labels, dtype=np.int32)
+        self.data_len = self.train_data.shape[0]
 
-    def get_single_data(self):
-        image1 = self.images[self.i] / 255
-        image2 = self.images[self.j] / 255
-        label1 = int(self.labels[self.i])
-        label2 = int(self.labels[self.j])
-        distance = 0 if label1==label2 else 1
-        self.j+=1
-        if self.j == self.data_len:
-            self.j=0
-            self.i+=1
-        return [image1], [image2], [distance]
+        self.excluded_digits = exluded_digits
+        self.split_full_oneshot(self.excluded_digits)
+        self.full_batch_id = 0
+        self.one_shot_batch_id = 0
 
+        if (batch_size % 2) != 0:
+            raise Exception("Batch size must be divisible by two!")
+        self.batch_size = batch_size
 
+    def num_batches(self):
+        """
+        Returns batch count for training set
+        """
+        return len(self.full_data) // self.batch_size
 
+    def split_full_oneshot(self, one_shot_digits):
+        """
+        Splits training data into full training and one shot training sets.
+        :param one_shot_digits: List of digits which will be trained in one shot manner
+        """
+        self.full_data = []
+        self.full_labels = []
+        self.one_shot_data = []
+        self.one_shot_labels = []
 
-# generate_data('train_images', 'train', 30)
-# generate_data('val_images', 'validation', 5)
+        for i, (img, label) in enumerate(zip(self.train_data, self.train_labels)):
+            print('\rSplitting data: {:.2f}%'.format(i / self.data_len * 100), end='', flush=True)
+            if np.argmax(label) in one_shot_digits:
+                self.one_shot_data.append(img)
+                self.one_shot_labels.append(label)
+            else:
+                self.full_data.append(img)
+                self.full_labels.append(label)
+        print()
+
+    def get_full_data(self):
+        """
+        Provides full data for network
+        """
+        if self.full_batch_id % (len(self.full_data) // self.batch_size) == 0:
+            self.full_data, self.full_labels = shuffle(self.full_data, self.full_labels)
+            self.full_batch_id = 0
+
+        data = self.full_data[self.full_batch_id * self.batch_size: (self.full_batch_id + 1) * self.batch_size]
+        labels = self.full_labels[self.full_batch_id * self.batch_size: (self.full_batch_id + 1) * self.batch_size]
+        self.full_batch_id += 1
+        return data, labels
+
+    def get_one_shot_data(self, num_data_per_digit):
+        """
+        Provides one_shot data for network
+        """
+        self.one_shot_data, self.one_shot_labels = shuffle(self.one_shot_data, self.one_shot_labels)
+        cnt = Counter()
+
+        examples = []
+        for img, lbl in zip(self.one_shot_data, self.one_shot_labels):
+            digit = np.argmax(lbl)
+            if cnt[digit] < len(self.excluded_digits) * (1 + num_data_per_digit) * 2:
+                examples.append([img, digit])
+                cnt[digit] += 1
+
+        examples = sorted(examples, key=lambda item: item[1])
+
+        batches = []
+
+        for i in range(num_data_per_digit):
+            for out_digit in self.excluded_digits:
+                digits = [example[1] for example in examples]
+                id = digits.index(out_digit)
+                org_images = [examples[id][0]] * len(self.excluded_digits)
+                examples.pop(id)
+
+                comp_images = []
+                the_same = []
+                label_digits = []
+                for in_digit in self.excluded_digits:
+                    digits = [example[1] for example in examples]
+                    id = digits.index(in_digit)
+                    comp_images.append(examples[id][0])
+                    the_same.append(1 if in_digit == out_digit else 0)
+                    label_digits.append(in_digit)
+                    examples.pop(id)
+
+                comp_images, label_digits, the_same = shuffle(comp_images, label_digits, the_same)
+                batches.append([org_images, comp_images, the_same, label_digits])
+
+        return batches
+

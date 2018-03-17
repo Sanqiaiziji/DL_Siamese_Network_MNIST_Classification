@@ -1,92 +1,127 @@
-import tensorflow as tf
-import numpy as np
+import os
+
 import cv2
+import numpy as np
+import tensorflow as tf
+
 from utils import DataProvider
 
 # params
 batch_size = 40
-eta = 0.0000001
+eta = 0.0001
 margin = 0.2
-num_epochs = 30
+num_epochs = 100
 
 # placeholders
-images_1_pl = tf.placeholder(dtype=tf.float32, shape=[None, 28, 28, 1])
-images_2_pl = tf.placeholder(dtype=tf.float32, shape=[None, 28, 28, 1])
-the_same_pl = tf.placeholder(dtype=tf.float32, shape=None)
+images_1_placeholder = tf.placeholder(dtype=tf.float32, shape=[None, 28, 28, 1])
+images_2_placeholder = tf.placeholder(dtype=tf.float32, shape=[None, 28, 28, 1])
+label_placeholder = tf.placeholder(dtype=tf.float32, shape=None)
 
 
-# model
+# reusable model for each of two branches
 def get_model(inputs):
     with tf.variable_scope('network', reuse=tf.AUTO_REUSE):
-        conv1 = tf.layers.conv2d(inputs,
-                                 filters=4,
-                                 kernel_size=[3, 3],
-                                 padding='same',
-                                 activation=tf.nn.leaky_relu)
-        batch_norm1 = tf.layers.batch_normalization(conv1)
-        dropout1 = tf.layers.dropout(batch_norm1, 0.2)
+        net = tf.layers.conv2d(inputs,
+                               filters=64,
+                               kernel_size=[3, 3],
+                               activation=tf.nn.relu)
+        net = tf.layers.batch_normalization(net)
+        net = tf.layers.dropout(net, 0.2)
+        net = tf.layers.max_pooling2d(net, pool_size=[2, 2], strides=[2, 2], padding='same')
 
-        conv2 = tf.layers.conv2d(dropout1,
-                                 filters=8,
-                                 kernel_size=[3, 3],
-                                 padding='same',
-                                 activation=tf.nn.leaky_relu)
-        batch_norm2 = tf.layers.batch_normalization(conv2)
-        dropout2 = tf.layers.dropout(batch_norm2, 0.2)
+        net = tf.layers.conv2d(net,
+                               filters=128,
+                               kernel_size=[3, 3],
+                               activation=tf.nn.relu)
+        net = tf.layers.batch_normalization(net)
+        net = tf.layers.dropout(net, 0.2)
+        net = tf.layers.max_pooling2d(net, pool_size=[2, 2], strides=[2, 2], padding='same')
 
-        conv3 = tf.layers.conv2d(dropout2,
-                                 filters=8,
-                                 kernel_size=[3, 3],
-                                 padding='same',
-                                 activation=tf.nn.leaky_relu)
-        batch_norm3 = tf.layers.batch_normalization(conv3)
-        dropout3 = tf.layers.dropout(batch_norm3, 0.2)
+        net = tf.layers.conv2d(net,
+                               filters=256,
+                               kernel_size=[3, 3],
+                               activation=tf.nn.relu)
+        net = tf.layers.batch_normalization(net)
+        net = tf.layers.dropout(net, 0.2)
 
-        flatten = tf.layers.flatten(dropout3)
-
-        dense1 = tf.layers.dense(flatten, 500, activation=tf.nn.leaky_relu)
-        dense2 = tf.layers.dense(dense1, 500, activation=tf.nn.leaky_relu)
-
-        output = tf.layers.dense(dense2, 10)
-        return output
+        net = tf.layers.flatten(net)
+        net = tf.layers.dense(net, 4096, activation=tf.nn.sigmoid)
+        return net
 
 
-out_1 = get_model(images_1_pl)
-out_2 = get_model(images_2_pl)
+branch_1 = get_model(images_1_placeholder)
+branch_2 = get_model(images_2_placeholder)
 
-# loss
-Dw = tf.reduce_sum(tf.square(out_1 - out_2), axis=1, keep_dims=True)
-loss = 0.5 * (1 - the_same_pl) * tf.square(Dw) + 0.5 * the_same_pl * tf.square(tf.maximum(0.0, margin - Dw))
-loss = tf.reduce_sum(loss)
+logits = tf.layers.dense(branch_1 - branch_2, 1, activation=None)
+sigmoid_logits = tf.squeeze(tf.nn.sigmoid(logits), -1)
+thresholded_logits = tf.cast(tf.cast(sigmoid_logits + 0.5, tf.uint8), tf.float32)
+
+loss = tf.losses.sigmoid_cross_entropy(label_placeholder, logits)
+accuracy = tf.reduce_sum(tf.cast(tf.equal(thresholded_logits, label_placeholder), tf.float32)) / batch_size
+
+tf.summary.scalar('loss', loss)
+tf.summary.scalar('accuracy', accuracy)
 
 # optimizer
 train_op = tf.train.AdamOptimizer(eta).minimize(loss)
 
-provider = DataProvider('train_images')
-val_provider = DataProvider('val_images')
-with tf.Session() as sess:
-    sess.run(tf.global_variables_initializer())
-    for i in range(provider.data_len ** 2):
-        images_1, images_2, the_same = provider.get_single_data()
-        _, cost = sess.run([train_op, loss],
-                           feed_dict={images_1_pl: images_1, images_2_pl: images_2, the_same_pl: the_same})
-        print("\rIterations: %.2f, cost: %f" % (i / provider.data_len ** 2, cost), end='', flush=True)
+data_provider = DataProvider(batch_size, [1, 5])
+full_num_batches = data_provider.num_batches()
 
-    # test it
-    images = val_provider.images
-    labels = val_provider.labels
-    for i in range(val_provider.data_len):
-        img1 = [images[i]]
-        lbl1 = labels[i]
-        matching_label = -1
-        dissimilarity = 10000.0
-        for j in range(provider.data_len):
-            if i == j:
-                continue
-            img2 = [provider.images[j]]
-            lbl2 = provider.labels[j]
-            cost = sess.run(Dw, feed_dict={images_1_pl: img1, images_2_pl: img2})
-            if cost < dissimilarity:
-                dissimilarity = cost
-                matching_label = lbl2
-        print(lbl1, matching_label, dissimilarity)
+if not os.path.isdir('summaries'):
+    os.mkdir('summaries')
+
+merged = tf.summary.merge_all()
+
+with tf.Session() as sess:
+    train_writer = tf.summary.FileWriter('summaries/model', sess.graph)
+    sess.run(tf.global_variables_initializer())
+
+    # full training
+    for epoch in range(num_epochs):
+        for batch in range(full_num_batches):
+            data, labels = data_provider.get_full_data()
+            labels = [np.argmax(label) for label in labels]
+
+            a_data = data[:batch_size // 2]
+            b_data = data[batch_size // 2:]
+            labels = np.equal(labels[:batch_size // 2], labels[batch_size // 2:]).astype(np.float32)
+
+            _, cost, acc, summ = sess.run([train_op, loss, accuracy, merged],
+                                          feed_dict={images_1_placeholder: a_data, images_2_placeholder: b_data, label_placeholder: labels})
+            print(
+                'Training on full data: epoch {} of {}, batch {} of {}, cost: {:.4f}, full acc: {:.4f}'.format(epoch + 1, num_epochs, batch + 1,
+                                                                                                               full_num_batches, cost,
+                                                                                                               acc))
+            train_writer.add_summary(summ, epoch * full_num_batches + batch)
+
+        # one shot validation
+        val_batches = data_provider.get_one_shot_data(20)
+        accuracies = []
+        for batch in val_batches:
+            org_imgs = batch[0]
+            comp_imgs = batch[1]
+            the_same = batch[2]
+
+            probs = sess.run(sigmoid_logits, feed_dict={images_1_placeholder: org_imgs, images_2_placeholder: comp_imgs})
+
+            # accuracy
+            output = np.zeros_like(probs)
+            output[np.argmax(probs)] = 1
+            equal = int(np.array_equal(the_same, output))
+            accuracies.append(equal)
+        print('--------Accuracy after {} epochs: {}'.format(epoch + 1, sum(accuracies) / len(accuracies)))
+
+    # one shot testing
+    if not os.path.isdir('sample_imgs'):
+        os.mkdir('sample_imgs')
+    val_batches = data_provider.get_one_shot_data(20)
+    for i, batch in enumerate(val_batches):
+        org_imgs = batch[0]
+        comp_imgs = batch[1]
+        digits = batch[3]
+        probs = sess.run(sigmoid_logits, feed_dict={images_1_placeholder: org_imgs, images_2_placeholder: comp_imgs})
+
+        id = np.argmax(probs)
+        digit = digits[id]
+        cv2.imwrite('sample_imgs/sample_' + str(i) + '_digit_' + str(digit) + '.jpg', (org_imgs[0] * 255).astype(np.uint8))
